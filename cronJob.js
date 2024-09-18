@@ -138,9 +138,11 @@ async function processLogs() {
     }, {});
 
     for (const [network, networkEvents] of Object.entries(eventsByNetwork)) {
+      log(`Processing network: ${network}`);
       const RPC_URL = getRpcUrl(network);
 
       // Get latest block using both strategies
+      log("Fetching latest block numbers");
       const latestBlockEthBlockNumber = await getLatestBlockNumber(
         RPC_URL,
         "eth_blockNumber"
@@ -151,6 +153,7 @@ async function processLogs() {
       );
 
       // Process logs for both strategies
+      log("Processing network logs");
       await processNetworkLogs(
         networkEvents,
         RPC_URL,
@@ -164,9 +167,10 @@ async function processLogs() {
         "eth_getBlockByNumber"
       );
     }
+    log("Finished processLogs function");
   } catch (error) {
-    console.error("Error processing logs:", error.message);
-    log("Error processing logs: " + error.message);
+    console.error("Error processing logs:", error);
+    log("Error processing logs: " + error.stack);
   }
 }
 
@@ -177,57 +181,62 @@ async function processNetworkLogs(
   strategy
 ) {
   for (const event of networkEvents) {
-    const eventKey = `${event.chain}-${event.factory_address}`;
-    const fromBlock = lastProcessedBlocks[`${eventKey}-${strategy}`]
-      ? lastProcessedBlocks[`${eventKey}-${strategy}`] + 1
-      : latestBlock;
+    try {
+      const eventKey = `${event.chain}-${event.factory_address}`;
+      const fromBlock = lastProcessedBlocks[`${eventKey}-${strategy}`]
+        ? lastProcessedBlocks[`${eventKey}-${strategy}`] + 1
+        : latestBlock;
 
-    if (fromBlock > latestBlock) {
-      continue;
-    }
+      if (fromBlock > latestBlock) {
+        continue;
+      }
 
-    log(
-      `Processing ${event.chain} - ${event.exchange_name} | Strategy: ${strategy} | Blocks: ${fromBlock} to ${latestBlock}`
-    );
-
-    const logs = await getLogs(
-      RPC_URL,
-      event.factory_address,
-      getEventTopic(event.event),
-      fromBlock,
-      latestBlock
-    );
-
-    if (logs.length > 0) {
       log(
-        `Found ${logs.length} logs for ${event.factory_address} on ${event.chain} using ${strategy}`
+        `Processing ${event.chain} - ${event.exchange_name} | Strategy: ${strategy} | Blocks: ${fromBlock} to ${latestBlock}`
       );
-      for (const logEntry of logs) {
-        const logData = {
-          transaction_index: parseInt(logEntry.transactionIndex, 16),
-          transaction_hash: logEntry.transactionHash,
-          log_index: parseInt(logEntry.logIndex, 16),
-          removed: logEntry.removed,
-          block_number: parseInt(logEntry.blockNumber, 16),
-          block_hash: logEntry.blockHash,
-          exchange: event.exchange_name,
-          network: event.chain,
-          strategy: strategy,
-        };
 
-        // Insert data into Supabase
-        const { data, error } = await supabase.from("logs").insert(logData);
+      const logs = await getLogs(
+        RPC_URL,
+        event.factory_address,
+        getEventTopic(event.event),
+        fromBlock,
+        latestBlock
+      );
 
-        if (error) {
-          log("Error inserting data into Supabase: " + error.message);
-        } else {
-          log(`Inserted log into Supabase: ${JSON.stringify(logData)}`);
+      if (logs.length > 0) {
+        log(
+          `Found ${logs.length} logs for ${event.factory_address} on ${event.chain} using ${strategy}`
+        );
+        for (const logEntry of logs) {
+          const logData = {
+            transaction_index: parseInt(logEntry.transactionIndex, 16),
+            transaction_hash: logEntry.transactionHash,
+            log_index: parseInt(logEntry.logIndex, 16),
+            removed: logEntry.removed,
+            block_number: parseInt(logEntry.blockNumber, 16),
+            block_hash: logEntry.blockHash,
+            exchange: event.exchange_name,
+            network: event.chain,
+            strategy: strategy,
+          };
+
+          // Insert data into Supabase
+          const { data, error } = await supabase.from("logs").insert(logData);
+
+          if (error) {
+            log("Error inserting data into Supabase: " + error.message);
+          } else {
+            log(`Inserted log into Supabase: ${JSON.stringify(logData)}`);
+          }
         }
       }
-    }
 
-    // Update the last processed block for this event and strategy, regardless of whether logs were found
-    lastProcessedBlocks[`${eventKey}-${strategy}`] = latestBlock;
+      // Update the last processed block for this event and strategy
+      lastProcessedBlocks[`${eventKey}-${strategy}`] = latestBlock;
+    } catch (error) {
+      console.error(`Error processing event ${event.exchange_name}:`, error);
+      log(`Error processing event ${event.exchange_name}: ${error.stack}`);
+    }
   }
 }
 
@@ -245,9 +254,13 @@ function getEventTopic(eventName) {
 async function runContinuously() {
   while (true) {
     try {
+      log("Starting a new iteration");
       await processLogs();
     } catch (error) {
-      log("Error in continuous execution: " + error.message);
+      console.error("Error in continuous execution:", error);
+      log("Error in continuous execution: " + error.stack);
+      // Wait for 1 minute before retrying
+      await new Promise((resolve) => setTimeout(resolve, 60000));
     }
   }
 }
